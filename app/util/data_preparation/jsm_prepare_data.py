@@ -1,5 +1,6 @@
 import datetime
 import functools
+import multiprocessing
 import random
 import string
 from datetime import timedelta
@@ -45,6 +46,7 @@ REQUEST_TYPES_NAMES = ['Technical support', 'Licensing and billing questions', '
 
 performance_agents_count = JSM_SETTINGS.agents_concurrency
 performance_customers_count = JSM_SETTINGS.customers_concurrency
+num_cores = multiprocessing.cpu_count()
 
 # TODO why do we do this?
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -119,13 +121,12 @@ def __get_customers_with_requests(jira_client, jsm_client, count):
         start_at = start_at + max_count_iteration
         customer_chunks = [customers[x:x + customers_chunk_size]
                            for x in range(0, len(customers), customers_chunk_size)]
+        pool = multiprocessing.pool.ThreadPool(processes=num_cores)  # Can be increased to improve script speed
 
         for customer_chunk in customer_chunks:
             if len(customers_with_requests) >= count:
                 break
-
-            customers_datas = [__filter_customer_with_requests(customer, jsm_client) for customer in customer_chunk]
-
+            customers_datas = pool.starmap(__filter_customer_with_requests, [(i, jsm_client) for i in customer_chunk])
             for customer_data in customers_datas:
                 if customer_data['has_requests']:
                     if len(customers_with_requests) >= count:
@@ -240,9 +241,9 @@ def __get_service_desk_info(jira_api, jsm_api, service_desk):
 def __get_service_desks(jsm_api, jira_api, service_desks):
     now = datetime.datetime.now()
     print(f'Service desks start {now.strftime("%H:%M:%S")}')
-
-    service_desks_with_requests = [__get_service_desk_info(jira_api, jsm_api, service_desk) for service_desk in
-                                   service_desks]
+    pool = multiprocessing.pool.ThreadPool(processes=num_cores*2)
+    service_desks_with_requests = pool.starmap(__get_service_desk_info, [(jira_api, jsm_api, service_desk)
+                                               for service_desk in service_desks])
 
     print(f"Retrieved {len(service_desks)} Jira Service Desks")
     large_service_desks = []
@@ -321,10 +322,9 @@ def __get_requests(jira_api, service_desks, requests_without_distribution):
 
     print(f'Start retrieving issues by distribution per project: {issues_distribution_id}')
     distribution_success = True
-
-    issues_list = [__get_service_desk_requests(jira_api, issues_distribution_id, issue) for issue in
-                   service_desks_issues]
-
+    pool = multiprocessing.pool.ThreadPool(processes=num_cores)
+    issues_list = pool.starmap(__get_service_desk_requests, [(jira_api, issues_distribution_id, i)
+                                                             for i in service_desks_issues])
     # Check if requests distribution per service desk is success
     for service_desk in issues_list:
         if not service_desk['distribution_success']:
@@ -390,8 +390,9 @@ def __get_service_desk_request_types(jsm_api, service_desk):
 
 
 def __get_request_types(jsm_api, service_desks):
-    requests_ids = [__get_service_desk_request_types(jsm_api, service_desk) for service_desk in service_desks]
-
+    pool = multiprocessing.pool.ThreadPool(processes=num_cores * 2)
+    requests_ids = pool.starmap(__get_service_desk_request_types,
+                                [(jsm_api, service_desk) for service_desk in service_desks])
     requests_ids = sum(requests_ids, [])
     request_types_list = []
     for request_id in requests_ids:
